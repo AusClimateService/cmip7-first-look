@@ -1,0 +1,283 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Calculate seasonal means of tas and other vars over various historical periods - CMIP6 for comparison
+
+- test script 
+- need to redo with data from lp01
+
+Created on 03/11/2026
+
+@author: schapman
+"""
+#%%#import packages
+import numpy as np
+import glob
+import xarray as xr
+import os
+from pathlib import Path
+import re
+import xesmf as xe
+
+#%% Functions
+
+def regrid_to_target(da, target_grid):
+
+    regridder = xe.Regridder(
+        da,
+        target_grid,
+        "bilinear",
+        periodic=False,
+        reuse_weights=False
+    )
+
+    return regridder(da)
+
+def find_models(base_dir, scen):
+
+    models = {}
+
+    for model_dir in base_dir.iterdir():
+
+        if not model_dir.is_dir():
+            continue
+
+        scen_dir = model_dir / scen
+
+        if not scen_dir.exists():
+            continue
+
+        variants = {}
+
+        for variant_dir in scen_dir.iterdir():
+
+            if (
+                variant_dir.is_dir()
+                and VARIANT_RE.fullmatch(variant_dir.name)
+                and (variant_dir / "Amon" / VARIABLE).exists()
+            ):
+                variants[variant_dir.name] = variant_dir
+
+        if variants:
+            models[model_dir.name] = variants
+
+    return models
+
+def find_files(variant_path, variable):
+
+    files = []
+
+    var_dir = variant_path / "Amon" / variable
+
+    if not var_dir.exists():
+        return files
+
+    for grid_dir in var_dir.iterdir():
+
+        if not grid_dir.is_dir():
+            continue
+
+        for version_dir in grid_dir.iterdir():
+
+            if version_dir.is_dir():
+
+                files.extend(
+                    sorted(version_dir.glob("*.nc"))
+                )
+
+    return sorted(files)
+
+
+def open_variant(files, variable, syear, eyear, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON):
+
+    ds = xr.open_mfdataset(
+        files,
+        combine="by_coords",
+        parallel=True,
+        decode_times=True
+    )
+
+    # Subset years
+    ds = ds.where(
+        (ds.time.dt.year >= int(syear)) &
+        (ds.time.dt.year <= int(eyear)),
+        drop=True
+    )       
+
+    # Spatial subset
+    #da = spatial_subset(ds, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
+
+    da = regrid_to_target(ds[variable], target_grid)
+
+    # Seasonal climatology
+    da = da.groupby("time.season").mean("time")
+
+    return da
+
+def spatial_subset(da, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON):
+
+    # ----------------------------------------------
+    # Convert longitudes to 0-360 if needed
+    # ----------------------------------------------
+
+    if da.lon.min() < 0:
+
+        da = da.assign_coords(
+            lon=(da.lon % 360)
+        )
+
+        da = da.sortby("lon")
+
+    # ----------------------------------------------
+    # Latitude subset
+    # ----------------------------------------------
+
+    if da.lat[0] > da.lat[-1]:
+
+        da = da.sel(
+            lat=slice(MAX_LAT, MIN_LAT)
+        )
+
+    else:
+
+        da = da.sel(
+            lat=slice(MIN_LAT, MAX_LAT)
+        )
+
+    # ----------------------------------------------
+    # Longitude subset
+    # ----------------------------------------------
+
+    da = da.sel(
+        lon=slice(MIN_LON, MAX_LON)
+    )
+
+    return da
+
+
+#%% Set up variables
+syr = '1991'
+eyr = '2020'
+
+scen = 'historical'
+
+mod_path = '/scratch/qclimdata/Data/GCM/'
+
+VARIABLE = "tas"  # variable to process
+
+MIN_LAT, MAX_LAT = -45, 10
+MIN_LON, MAX_LON = 50, 260
+
+TARGET_FILE='/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim/ERA5_2t_t2m_sesmean_' + syr + '-' + eyr + '.nc'
+
+VARIANT_RE = re.compile(r"r\d+i\d+p\d+f\d+")
+OUT_DIR = Path("/scratch/qclimdata/Data/GCM/model_means")
+
+OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+
+#%%
+
+# ============================================================
+# Main
+# ============================================================
+
+target_ds = xr.open_dataset(TARGET_FILE)
+
+target_grid = xr.Dataset(
+    {
+        "lat": target_ds.latitude,
+        "lon": target_ds.longitude,
+    }
+)
+
+models = find_models(Path(mod_path), scen)
+
+print(f"Found {len(models)} models")
+
+for model_name, variants in sorted(models.items()):
+
+    print()
+    print("=" * 80)
+    print(model_name)
+    print("=" * 80)
+
+    variant_arrays = []
+    variant_names = []
+
+    for variant_name, variant_path in sorted(variants.items()):
+
+        files = find_files(variant_path, VARIABLE)
+
+        if len(files) == 0:
+            print(f"Skipping {variant_name} ", "(no files found)")
+            continue
+
+        print(f"{variant_name}: ", f"{len(files)} files")
+
+        try:
+
+            da = open_variant(files, VARIABLE, syr, eyr, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
+
+            da = da.expand_dims(variant=[variant_name])
+
+            variant_arrays.append(da)
+            variant_names.append(variant_name)
+
+        except Exception as e:
+
+            print(f"Failed {variant_name}: {e}")
+
+    if len(variant_arrays) == 0:
+
+        print("No usable variants")
+        continue
+
+    print(f"Computing ensemble mean from ", f"{len(variant_arrays)} variants")
+
+    ensemble = xr.concat(variant_arrays, dim="variant")
+
+    model_mean = ensemble.mean(
+        dim="variant",
+        keep_attrs=True,
+        skipna=True
+    )
+
+    model_mean.name = VARIABLE
+
+    model_mean.attrs[
+        "ensemble_members"
+    ] = ",".join(variant_names)
+
+    model_mean.attrs[
+        "n_variants"
+    ] = len(variant_names)
+
+    outfile = (
+        OUT_DIR /
+        f"{model_name}_{VARIABLE}_ensemble_mean_{syr}-{eyr}.nc"
+    )
+
+    print(f"Writing {outfile}")
+
+    model_mean.to_netcdf(outfile)
+
+    print(np.nanmean(model_mean[0]) - 273.15)
+
+    # Calculate bias
+    print("Calculating bias")
+    bias = model_mean - target_ds
+
+    print("Writing bias")
+    bias_outfile = (
+    OUT_DIR /
+    f"{model_name}_{VARIABLE}_bias_{syr}-{eyr}.nc"
+    )
+
+    bias.to_netcdf(bias_outfile)
+
+    print("Done")
+
+print("\nFinished")
+# %%
