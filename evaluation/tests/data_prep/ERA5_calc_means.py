@@ -3,9 +3,6 @@
 """
 Calculate seasonal means of ERA5
 
-Sample script to test bias calc and plotting for CMIP6 and CMIP7
--Need to redo with data from lp01
-
 Created on 03/11/2026
 
 Environment: env-fiona-xesmf
@@ -17,6 +14,7 @@ import glob
 import xarray as xr
 from pathlib import Path
 import xesmf as xe
+import numpy as np
 
 #%% Set up variables
 syr = '1991'
@@ -34,7 +32,7 @@ OUT_DIR = Path("/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim")
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # File for regridding
-base_file = '/scratch/qclimdata/cmip7/Data/GCM/ACCESS-Consortium/ACCESS-ESM1-6/historical/r1i1p1f1/glb/mon/tas/tavg-h2m-hxy-u/g115/latest/tas_tavg-h2m-hxy-u_mon_glb_g115_ACCESS-ESM1-6_historical_r1i1p1f1_185001-185912.nc'
+base_file = '/scratch/qclimdata/cmip7/Data/GCM/ACCESS-Consortium/ACCESS-ESM1-6/historical/r10i1p1f1/glb/mon/tas/tavg-h2m-hxy-u/gr1.5/v20261009/tas_tavg-h2m-hxy-u_mon_glb_gr1.5_ACCESS-ESM1-6_historical_r10i1p1f1_185001-202212.nc'
 dst = xr.open_dataset(base_file)
 dst = dst.rename({
     "lat": "latitude",
@@ -54,8 +52,24 @@ ds = xr.open_mfdataset(
 )
 
 print("Subset years")
+
 # Subset years
 ds = ds.sel(time=slice(f"{syr}", f"{eyr}"))
+
+# --------------------------------------------------
+# Check year coverage
+# --------------------------------------------------
+expected_years = np.arange(int(syr), int(eyr) + 1)
+
+actual_years = np.unique(ds.time.dt.year.values)
+
+missing_years = np.setdiff1d(expected_years, actual_years)
+
+if len(missing_years) > 0:
+    raise ValueError(
+        f"Missing years after subsetting: "
+        f"{missing_years.tolist()}"
+    )
 
 # Regrid
 regridder = xe.Regridder(
@@ -88,6 +102,6 @@ encoding = {
     "season": {"_FillValue": None},
 }
 
-outfile = (OUT_DIR /f"ERA5_{VARIABLE}_{STATISTIC}_sesmean_{syr}-{eyr}.nc")
+outfile = (OUT_DIR /f"ERA5_gr1.5_{VARIABLE}_{STATISTIC}_sesmean_{syr}-{eyr}.nc")
 da.name = STATISTIC
 da.to_netcdf(outfile, encoding = encoding)

@@ -3,8 +3,9 @@
 """
 Calculate seasonal means of tas and other vars over various historical periods
 
-- sample script to test bias and plotting of data
-- need to redo with regridded data from lp01
+# full time series 1991 - 2020 will be available from historical run
+
+Data has been transferred to Qld HPC from NCI. Maintained NCI file structure (from below institution).
 
 Created on 03/11/2026
 
@@ -91,6 +92,8 @@ def find_files(variant_path, variable, statistic):
     for stat_dir in stat_dirs:
 
         for grid_dir in stat_dir.iterdir():
+            if grid_dir.name != "gr1.5":
+                continue
 
             if not grid_dir.is_dir():
                 continue
@@ -109,7 +112,7 @@ def find_files(variant_path, variable, statistic):
             files.extend(
                 sorted(
                     latest_version.glob(
-                        f"{variable}_*.nc"
+                        f"{variable}_*gr1.5*.nc"
                     )
                 )
             )
@@ -135,9 +138,22 @@ def open_variant(files, variable, syear, eyear, MIN_LAT, MAX_LAT, MIN_LON, MAX_L
         drop=True
     )
 
+    # Check year coverage
+    expected_years = np.arange(int(syear), int(eyear) + 1)
+
+    actual_years = np.unique(da.time.dt.year.values)
+
+    missing_years = np.setdiff1d(expected_years, actual_years)
+
+    if len(missing_years) > 0:
+        raise ValueError(
+            f"Missing years after subsetting: "
+            f"{missing_years.tolist()}"
+        )
+
     # Spatial subset
-    da = regrid_to_target(da, target_grid)
-    #da = spatial_subset(da, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
+    #da = regrid_to_target(da, target_grid)
+    da = spatial_subset(da, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
 
     # Seasonal climatology
     da = da.groupby("time.season").mean("time")
@@ -199,7 +215,7 @@ STATISTIC = 'tavg'
 MIN_LAT, MAX_LAT = -45, 10
 MIN_LON, MAX_LON = 50, 260
 
-TARGET_FILE='/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim/ERA5_2t_t2m_sesmean_' + syr + '-' + eyr + '.nc'
+TARGET_FILE='/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim/ERA5_gr1.5_2t_t2m_sesmean_' + syr + '-' + eyr + '.nc'
 
 VARIANT_RE = re.compile(r"r\d+i\d+p\d+f\d+")
 OUT_DIR = Path("/scratch/qclimdata/cmip7/Data/GCM/model_means")
@@ -213,13 +229,14 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 target_ds = xr.open_dataset(TARGET_FILE)
-
-target_grid = xr.Dataset(
+target = target_ds.rename(
     {
-        "lat": target_ds.latitude,
-        "lon": target_ds.longitude,
+        "latitude": "lat",
+        "longitude": "lon"
     }
 )
+
+#target_grid = xr.Dataset({"lat": target_ds.latitude, "lon": target_ds.longitude})
 
 models = find_models(Path(mod_path))
 
@@ -288,7 +305,7 @@ for model_name, variants in sorted(models.items()):
 
     outfile = (
         OUT_DIR /
-        f"{model_name}_{VARIABLE}_{STATISTIC}_ensemble_mean_{syr}-{eyr}.nc"
+        f"{model_name}_gr1.5_{VARIABLE}_{STATISTIC}_ensemble_mean_{syr}-{eyr}.nc"
     )
 
     print(f"Writing {outfile}")
@@ -297,12 +314,12 @@ for model_name, variants in sorted(models.items()):
 
     # Calculate bias
     print("Calculating bias")
-    bias = model_mean - target_ds
+    bias = model_mean - target
 
     print("Writing bias")
     bias_outfile = (
     OUT_DIR /
-    f"{model_name}_{VARIABLE}_bias_{syr}-{eyr}.nc"
+    f"{model_name}_gr1.5_{VARIABLE}_bias_{syr}-{eyr}.nc"
     )
 
     bias.to_netcdf(bias_outfile)

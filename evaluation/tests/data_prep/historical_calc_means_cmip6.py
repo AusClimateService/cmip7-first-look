@@ -3,8 +3,9 @@
 """
 Calculate seasonal means of tas and other vars over various historical periods - CMIP6 for comparison
 
-- test script 
-- need to redo with data from lp01
+# will need historical + future scenario to get full time series
+
+Data has been transferred to Qld HPC from NCI. Maintained NCI file structure (from below institution).
 
 Created on 03/11/2026
 
@@ -64,7 +65,6 @@ def find_models(base_dir, scen):
     return models
 
 def find_files(variant_path, variable):
-
     files = []
 
     var_dir = variant_path / "Amon" / variable
@@ -74,7 +74,7 @@ def find_files(variant_path, variable):
 
     for grid_dir in var_dir.iterdir():
 
-        if not grid_dir.is_dir():
+        if grid_dir.name != "gr1.5":
             continue
 
         for version_dir in grid_dir.iterdir():
@@ -82,13 +82,41 @@ def find_files(variant_path, variable):
             if version_dir.is_dir():
 
                 files.extend(
-                    sorted(version_dir.glob("*.nc"))
+                    sorted(version_dir.glob("*gr1.5*.nc"))
                 )
 
     return sorted(files)
 
+def get_variant_files(model_dir, variant_name, variable, ssp_scen):
 
-def open_variant(files, variable, syear, eyear, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON):
+    historical_variant = (
+        model_dir / "historical" / variant_name
+    )
+
+    future_variant = (
+        model_dir / ssp_scen / variant_name
+    )
+
+    if not historical_variant.exists():
+        return []
+
+    if not future_variant.exists():
+        return []
+
+    hist_files = find_files(
+        historical_variant,
+        variable
+    )
+
+    ssp_files = find_files(
+        future_variant,
+        variable
+    )
+
+    return sorted(hist_files + ssp_files)
+
+
+def open_variant(files, VARIABLE, syear, eyear, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON):
 
     ds = xr.open_mfdataset(
         files,
@@ -104,10 +132,28 @@ def open_variant(files, variable, syear, eyear, MIN_LAT, MAX_LAT, MIN_LON, MAX_L
         drop=True
     )       
 
-    # Spatial subset
-    #da = spatial_subset(ds, MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
+    # Check all years present in combined historical + ssp data
+    expected_years = np.arange(int(syear),int(eyear) + 1)
 
-    da = regrid_to_target(ds[variable], target_grid)
+    actual_years = np.unique(
+        ds.time.dt.year.values
+    )
+
+    missing_years = np.setdiff1d(
+        expected_years,
+        actual_years
+    )
+
+    if len(missing_years) > 0:
+        raise ValueError(
+            f"Missing years: "
+            f"{missing_years.tolist()}"
+        )
+
+    # Spatial subset
+    da = spatial_subset(ds[VARIABLE], MIN_LAT, MAX_LAT, MIN_LON, MAX_LON)
+
+    #da = regrid_to_target(ds[variable], target_grid)
 
     # Seasonal climatology
     da = da.groupby("time.season").mean("time")
@@ -160,6 +206,7 @@ syr = '1991'
 eyr = '2020'
 
 scen = 'historical'
+ssp_scen = 'ssp245' # which scenario to concatenate with historical to get post 2014 data
 
 mod_path = '/scratch/qclimdata/Data/GCM/'
 
@@ -168,7 +215,7 @@ VARIABLE = "tas"  # variable to process
 MIN_LAT, MAX_LAT = -45, 10
 MIN_LON, MAX_LON = 50, 260
 
-TARGET_FILE='/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim/ERA5_2t_t2m_sesmean_' + syr + '-' + eyr + '.nc'
+TARGET_FILE='/scratch/qclimdata/Data/Reanalysis/ERA/ERA5/clim/ERA5_gr1.5_2t_t2m_sesmean_' + syr + '-' + eyr + '.nc'
 
 VARIANT_RE = re.compile(r"r\d+i\d+p\d+f\d+")
 OUT_DIR = Path("/scratch/qclimdata/Data/GCM/model_means")
@@ -184,6 +231,12 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 # ============================================================
 
 target_ds = xr.open_dataset(TARGET_FILE)
+target = target_ds.rename(
+    {
+        "latitude": "lat",
+        "longitude": "lon"
+    }
+)
 
 target_grid = xr.Dataset(
     {
@@ -208,7 +261,8 @@ for model_name, variants in sorted(models.items()):
 
     for variant_name, variant_path in sorted(variants.items()):
 
-        files = find_files(variant_path, VARIABLE)
+        model_dir = Path(mod_path) / model_name
+        files = get_variant_files(model_dir, variant_name, VARIABLE, ssp_scen)
 
         if len(files) == 0:
             print(f"Skipping {variant_name} ", "(no files found)")
@@ -256,7 +310,7 @@ for model_name, variants in sorted(models.items()):
 
     outfile = (
         OUT_DIR /
-        f"{model_name}_{VARIABLE}_ensemble_mean_{syr}-{eyr}.nc"
+        f"{model_name}_gr1.5_{VARIABLE}_ensemble_mean_historical+{ssp_scen}_{syr}-{eyr}.nc"
     )
 
     print(f"Writing {outfile}")
@@ -267,12 +321,12 @@ for model_name, variants in sorted(models.items()):
 
     # Calculate bias
     print("Calculating bias")
-    bias = model_mean - target_ds
+    bias = model_mean - target
 
     print("Writing bias")
     bias_outfile = (
     OUT_DIR /
-    f"{model_name}_{VARIABLE}_bias_{syr}-{eyr}.nc"
+    f"{model_name}_gr1.5_{VARIABLE}_bias_historical+{ssp_scen}_{syr}-{eyr}.nc"
     )
 
     bias.to_netcdf(bias_outfile)

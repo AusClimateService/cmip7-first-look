@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Compare climatology of CMIP6 and CMIP7 ensemble means
+Compare bias in climatology of CMIP7, CMIIP6, CMIP5 nad CMIP3 ensemble means
 
-Test plotting script
-- need to redo with lp01 data
-- need to check and improve stippling
+Takes data where the ensemble mean has previously been calcualted for each model,
+using only models where 1991 - 2020 available
+for CMIPs other than 7, this requires using future scenario data
 
 Created on 4/11/2026
 
@@ -41,23 +41,9 @@ matplotlib.rcParams.update({'font.size': fs})
 
 proj = ccrs.PlateCarree(central_longitude=180)
 
-#%% Load data
-
-var = 'tas'
-file_var = 't2m'
-syr = '1991'
-eyr = '2020'
-
-#% Load CMIP6
-cmip6_path = '/scratch/qclimdata/Data/GCM/model_means/'
-cmip7_path = '/scratch/qclimdata/cmip7/Data/GCM/model_means/'
-
-save_path = '/scratch/qclimprod/CMIP7/Papers/gcm_evaluation/Figures/'
-
-#%% #Load model data
 def calc_ens(fpath, syr, eyr, var, file_var):
 
-    file_names = glob.glob(fpath + '*bias_' + syr + '-' + eyr + '.nc')
+    file_names = glob.glob(fpath + '*gr1.5*bias_*' + syr + '-' + eyr + '.nc')
     file_names = [x for x in file_names if var in x]
 
     mod_list = []
@@ -66,7 +52,9 @@ def calc_ens(fpath, syr, eyr, var, file_var):
 
         x_xr = xr.load_dataset(file)
 
+        # ens not used for anything
         ens = file.partition('model_means/')[2].partition("_")[0]
+        print(ens)
 
         mod_list.append(x_xr[file_var])
 
@@ -80,19 +68,41 @@ def calc_ens(fpath, syr, eyr, var, file_var):
 
     ens_mean = ens_dat.mean('ens')
 
-	# This part needs to be checked and improved
     nmods = ens_dat.sizes['ens']
-    threshold = np.ceil(2 * nmods / 3)
+    threshold = np.ceil(2 * nmods / 3) # number of models need to agree
+    # to show stippling (2/3rds)
 
+    # Counts number of positive and negative biases for each grid cell
     pos_count = (ens_dat > 0).sum('ens')
     neg_count = (ens_dat < 0).sum('ens')
 
+    # If either positive or negative counts are above threshold, ahve agreement
     agreement = (pos_count >= threshold) | (neg_count >= threshold)
 
     return ens_mean, agreement
 
+#%% Load data
+
+var = 'tas'
+file_var = 't2m' # name of ERA5 variable and bias variable name
+syr = '1991'
+eyr = '2020'
+
+#% Load CMIP data
+cmip3_path = '/scratch/qclimdata/cmip3/Data/GCM/model_means/'
+cmip5_path = '/scratch/qclimdata/cmip5/Data/GCM/model_means/'
+cmip6_path = '/scratch/qclimdata/Data/GCM/model_means/'
+cmip7_path = '/scratch/qclimdata/cmip7/Data/GCM/model_means/'
+
+save_path = '/scratch/qclimprod/CMIP7/Papers/gcm_evaluation/Figures/'
+
+#%% #Load model data and calculate mean for each CMIP
+
+cmip3_mean, cmip3_agree = calc_ens(cmip3_path, syr, eyr, var, file_var)
+cmip5_mean, cmip5_agree = calc_ens(cmip5_path, syr, eyr, var, file_var)
 cmip6_mean, cmip6_agree = calc_ens(cmip6_path, syr, eyr, var, file_var)
 cmip7_mean, cmip7_agree = calc_ens(cmip7_path, syr, eyr, var, file_var)
+
 
 #%% Ens avg BIAS plots
 
